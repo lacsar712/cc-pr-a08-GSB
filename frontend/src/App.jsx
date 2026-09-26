@@ -1,10 +1,24 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+
+function minuteToHHMM(m) {
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+}
+
+function parseHHMM(text) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim())
+  if (!match) return null
+  const h = Number(match[1])
+  const mm = Number(match[2])
+  if (h > 23 || mm > 59) return null
+  return h * 60 + mm
+}
 
 export default function App() {
   const [username, setUsername] = useState('printer')
   const [password, setPassword] = useState('print123456')
   const [token, setToken] = useState(localStorage.getItem('print_token') || '')
   const [role, setRole] = useState(localStorage.getItem('print_role') || '')
+  const [page, setPage] = useState('jobs')
   const [rows, setRows] = useState([])
   const [sheet, setSheet] = useState('插页-02')
   const [cyan, setCyan] = useState('0.08')
@@ -24,16 +38,16 @@ export default function App() {
     return data
   }
 
-  async function load() {
+  async function loadJobs() {
     setRows(await api('/api/jobs'))
   }
 
   useEffect(() => {
-    if (!token) return
-    load()
-    const timer = setInterval(load, 1000)
+    if (!token || page !== 'jobs') return
+    loadJobs()
+    const timer = setInterval(loadJobs, 1000)
     return () => clearInterval(timer)
-  }, [token])
+  }, [token, page])
 
   async function enter() {
     const data = await api('/api/auth/login', {
@@ -85,6 +99,33 @@ export default function App() {
     <main>
       <h1>印刷套准复核台</h1>
       <button onClick={leave}>退出</button>
+      <nav>
+        <button onClick={() => { setPage('jobs'); setError('') }}>复核队列</button>
+        <button onClick={() => { setPage('ban'); setError('') }}>班次禁投</button>
+      </nav>
+      {page === 'jobs' ? (
+        <JobsPage
+          role={role}
+          rows={rows}
+          sheet={sheet}
+          setSheet={setSheet}
+          cyan={cyan}
+          setCyan={setCyan}
+          magenta={magenta}
+          setMagenta={setMagenta}
+          send={send}
+          error={error}
+        />
+      ) : (
+        <BanPage role={role} api={api} />
+      )}
+    </main>
+  )
+}
+
+function JobsPage({ role, rows, sheet, setSheet, cyan, setCyan, magenta, setMagenta, send, error }) {
+  return (
+    <section>
       {role === 'writer' && (
         <p>
           <input value={sheet} onChange={(e) => setSheet(e.target.value)} />
@@ -110,6 +151,113 @@ export default function App() {
           ))}
         </tbody>
       </table>
-    </main>
+    </section>
+  )
+}
+
+function BanPage({ role, api }) {
+  const [win, setWin] = useState(null)
+  const [events, setEvents] = useState([])
+  const [startText, setStartText] = useState('')
+  const [endText, setEndText] = useState('')
+  const [msg, setMsg] = useState('')
+  const startRef = useRef(null)
+  const endRef = useRef(null)
+
+  async function load() {
+    const w = await api('/api/ban-window')
+    setWin(w)
+    setEvents(await api('/api/ban-events'))
+    if (document.activeElement !== startRef.current) {
+      setStartText(minuteToHHMM(w.start_minute))
+    }
+    if (document.activeElement !== endRef.current) {
+      setEndText(minuteToHHMM(w.end_minute))
+    }
+  }
+
+  useEffect(() => {
+    load()
+    const timer = setInterval(load, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  async function save() {
+    setMsg('')
+    const s = parseHHMM(startText)
+    const e = parseHHMM(endText)
+    if (s === null || e === null) {
+      setMsg('钟点格式应为 HH:MM')
+      return
+    }
+    try {
+      const w = await api('/api/ban-window', {
+        method: 'PUT',
+        body: JSON.stringify({ start_minute: s, end_minute: e }),
+      })
+      setStartText(minuteToHHMM(w.start_minute))
+      setEndText(minuteToHHMM(w.end_minute))
+    } catch (err) {
+      setMsg(err.message)
+    }
+  }
+
+  return (
+    <section>
+      <h2>班次禁投</h2>
+      <h3>钟点配置（闭区间，服务器本地钟点）</h3>
+      <p>
+        <label>
+          禁投起 <input
+            id="ban-start"
+            ref={startRef}
+            value={startText}
+            disabled={role !== 'writer'}
+            onChange={(ev) => setStartText(ev.target.value)}
+          />
+        </label>
+        <label>
+          禁投止 <input
+            id="ban-end"
+            ref={endRef}
+            value={endText}
+            disabled={role !== 'writer'}
+            onChange={(ev) => setEndText(ev.target.value)}
+          />
+        </label>
+        {role === 'writer' && <button onClick={save}>保存配置</button>}
+        {role !== 'writer' && <span>（只读账号不可修改配置）</span>}
+      </p>
+      {win && (
+        <p>
+          服务器时刻 {minuteToHHMM(win.now_minute)}（{win.server_clock}）
+          ：
+          <strong style={{ color: win.banned ? '#c00' : '#080' }}>
+            {win.banned ? '当前处于禁投钟点，投递将退回' : '当前可投递'}
+          </strong>
+        </p>
+      )}
+      {msg && <p>{msg}</p>}
+      <h3>禁投流水</h3>
+      <table>
+        <thead>
+          <tr><th>时间</th><th>印张</th><th>青</th><th>品</th><th>禁投窗</th><th>服务器钟点</th><th>操作人</th></tr>
+        </thead>
+        <tbody>
+          {events.map((ev) => (
+            <tr key={ev.id}>
+              <td>{ev.created_at_text}</td>
+              <td>{ev.sheet}</td>
+              <td>{ev.cyan_mm}</td>
+              <td>{ev.magenta_mm}</td>
+              <td>{minuteToHHMM(ev.start_minute)}–{minuteToHHMM(ev.end_minute)}</td>
+              <td>{minuteToHHMM(ev.now_minute)}</td>
+              <td>{ev.created_by}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {events.length === 0 && <p>暂无命中记录</p>}
+    </section>
   )
 }

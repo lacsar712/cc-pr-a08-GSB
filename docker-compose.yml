@@ -5,6 +5,8 @@ services:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
       POSTGRES_DB: printreg
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
     ports:
       - "54394:5432"
     volumes:
@@ -23,6 +25,7 @@ services:
     environment:
       DATABASE_URL: postgresql://app:app@db:5432/printreg
       JWT_SECRET: print-register-dev-secret
+      TZ: Asia/Shanghai
     depends_on:
       db:
         condition: service_healthy
@@ -33,6 +36,7 @@ services:
     command: ["python", "worker.py"]
     environment:
       DATABASE_URL: postgresql://app:app@db:5432/printreg
+      TZ: Asia/Shanghai
     depends_on:
       db:
         condition: service_healthy
